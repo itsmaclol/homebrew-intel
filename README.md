@@ -113,7 +113,7 @@ To package a newer Homebrew release, open **Actions → Intel installer → Run 
 
 ## Limits
 
-- **Intel is Tier 3 upstream.** Formulae updated after August 2026 have no Intel bottle and build from source; some may not build at all.
+- **Intel is Tier 3 upstream.** On 2026-10-19, 5,253 of 8,662 homebrew/core formulae (61%) still had a bottle Intel can use: mostly `sonoma`, plus `:all` bottles. Frequently updated ones such as `git`, `wget`, `node`, `python@3.14` and `ffmpeg` have none, so they and their dependencies build from source. That can take a long time, and some may not build at all.
 - **Homebrew stops running on Intel on 2027-09-01.** Rebuilding the installer can't change that.
 - **CI covers macOS 15 only**, the one Intel runner GitHub still offers. macOS 11–14 and 26 are allowed but untested.
 - **Unsigned.** The package has build provenance but no Apple Developer ID signature or notarization.
