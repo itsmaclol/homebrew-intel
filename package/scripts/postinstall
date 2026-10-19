@@ -144,9 +144,13 @@ chmod -h "${homebrew_pkg_mode}" Caskroom Cellar Frameworks bin etc include lib o
 chown -h "${homebrew_pkg_user}:${homebrew_pkg_group}" bin bin/brew etc include lib opt sbin share var
 chown -h -R "${homebrew_pkg_user}:${homebrew_pkg_group}" "${homebrew_owned_directories[@]}"
 
-# Make existing shared directories that Homebrew links into writable (as install.sh does).
-for dir in etc/bash_completion.d lib/pkgconfig share/aclocal share/doc share/info share/locale \
-  share/man share/man/man{1,2,3,4,5,6,7,8} share/zsh share/zsh/site-functions var/log
+# Make existing shared directories that brew requires to be writable writable.
+# Keep in sync with Keg.must_be_writable_directories in Homebrew/brew's keg.rb.
+for dir in etc/bash_completion.d lib/cps lib/pkgconfig \
+  share/aclocal share/doc share/info share/locale share/man share/man/man{1,2,3,4,5,6,7,8} \
+  share/cps share/zsh share/zsh/site-functions \
+  share/fish share/fish/vendor_completions.d share/fish/vendor_functions.d \
+  share/pwsh share/pwsh/completions var/log lib/python*/site-packages
 do
   [[ -d "${dir}" ]] || continue
   (
