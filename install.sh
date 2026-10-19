@@ -166,13 +166,16 @@ if [[ -n "${HOMEBREW_ON_MACOS-}" ]]
 then
   UNAME_MACHINE="$(/usr/bin/uname -m)"
 
-  # On macOS, support Apple Silicon only
-  if [[ "${UNAME_MACHINE}" != "arm64" ]]
+  if [[ "${UNAME_MACHINE}" == "arm64" ]]
   then
-    abort "Homebrew on macOS is only supported on Apple Silicon processors!"
+    HOMEBREW_PREFIX_DEFAULT="/opt/homebrew"
+  elif [[ "${UNAME_MACHINE}" == "x86_64" ]]
+  then
+    # Intel bottles are built for /usr/local, with the repository in /usr/local/Homebrew.
+    HOMEBREW_PREFIX_DEFAULT="/usr/local"
+  else
+    abort "Homebrew on macOS is only supported on Intel and Apple Silicon processors!"
   fi
-
-  HOMEBREW_PREFIX_DEFAULT="/opt/homebrew"
   HOMEBREW_CACHE="${HOME}/Library/Caches/Homebrew"
 
   STAT_PRINTF=("/usr/bin/stat" "-f")
@@ -236,7 +239,7 @@ esac
   [[ "${#HOMEBREW_PREFIX}" -le "${#HOMEBREW_PREFIX_DEFAULT}" ]]
 ) || abort "The Homebrew prefix \"${HOMEBREW_PREFIX}\" is longer than the default prefix \"${HOMEBREW_PREFIX_DEFAULT}\"."
 
-if [[ -n "${HOMEBREW_ON_MACOS-}" ]]
+if [[ -n "${HOMEBREW_ON_MACOS-}" && "${HOMEBREW_PREFIX}" != /usr/local ]]
 then
   HOMEBREW_REPOSITORY="${HOMEBREW_PREFIX}"
 else
@@ -625,6 +628,26 @@ fi
 if [[ -n "${HOMEBREW_ON_MACOS-}" ]]
 then
   macos_version="$(major_minor "$(/usr/bin/sw_vers -productVersion)")"
+  if [[ "${UNAME_MACHINE}" == "x86_64" ]]
+  then
+    # Keep in sync with HOMEBREW_MACOS_OLDEST_ALLOWED in Homebrew/brew's brew.sh.
+    if version_lt "${macos_version}" "11.0"
+    then
+      abort "Homebrew on Intel requires macOS Big Sur (11) or newer."
+    fi
+    ohai "Intel Macs are a Tier 3 configuration for Homebrew."
+    echo "$(
+      cat <<EOS
+Homebrew no longer routinely builds bottles for Intel Macs, so packages will
+increasingly be built from source (which needs the Xcode Command Line Tools) and
+Homebrew plans to stop running on Intel Macs in September 2027. See:
+  ${tty_underline}https://docs.brew.sh/Support-Tiers#tier-3${tty_reset}
+This is an unofficial Intel build of Homebrew's installer. Report installer
+problems to ${tty_underline}https://github.com/itsmaclol/homebrew-intel${tty_reset}, not to Homebrew.
+EOS
+    )
+"
+  fi
   if version_ge "${macos_version}" "${MACOS_NEWEST_UNSUPPORTED}" ||
      version_lt "${macos_version}" "${MACOS_OLDEST_SUPPORTED}"
   then
@@ -873,7 +896,12 @@ if file_not_grpowned "${HOMEBREW_CACHE}"
 then
   execute_sudo "${CHGRP[@]}" "-R" "${GROUP}" "${HOMEBREW_CACHE}"
 fi
-if [[ "${GROUP_CHMOD}" == go-w ]]
+if [[ "${GROUP_CHMOD}" == go-w && "${HOMEBREW_PREFIX}" == /usr/local ]]
+then
+  # /usr/local is shared with other software, so only recurse into what Homebrew owns.
+  execute_sudo "${CHMOD[@]}" -R go-w "${HOMEBREW_REPOSITORY}" \
+    "${HOMEBREW_PREFIX}"/{Cellar,Caskroom,Frameworks,var/homebrew} "${HOMEBREW_CACHE}"
+elif [[ "${GROUP_CHMOD}" == go-w ]]
 then
   execute_sudo "${CHMOD[@]}" -R go-w "${HOMEBREW_PREFIX}" "${HOMEBREW_CACHE}"
 fi

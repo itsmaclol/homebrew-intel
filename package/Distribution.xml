@@ -1,32 +1,49 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <installer-gui-script minSpecVersion="2">
-  <pkg-ref id="sh.brew.homebrew"/>
-  <options customize="never" hostArchitectures="arm64" rootVolumeOnly="true"/>
+  <pkg-ref id="io.github.itsmaclol.homebrew-intel"/>
+  <options customize="never" hostArchitectures="x86_64" rootVolumeOnly="true"/>
   <volume-check>
     <allowed-os-versions>
-        <os-version min="15.0.0"/>
+        <os-version min="11.0.0"/>
     </allowed-os-versions>
   </volume-check>
   <choices-outline>
     <line choice="default">
-      <line choice="sh.brew.homebrew"/>
+      <line choice="io.github.itsmaclol.homebrew-intel"/>
     </line>
   </choices-outline>
   <choice id="default"/>
-  <choice id="sh.brew.homebrew" visible="false">
-    <pkg-ref id="sh.brew.homebrew"/>
+  <choice id="io.github.itsmaclol.homebrew-intel" visible="false">
+    <pkg-ref id="io.github.itsmaclol.homebrew-intel"/>
   </choice>
-  <pkg-ref id="sh.brew.homebrew" onConclusion="none">Homebrew.pkg</pkg-ref>
+  <pkg-ref id="io.github.itsmaclol.homebrew-intel" onConclusion="none">Homebrew.pkg</pkg-ref>
 
-  <title>Homebrew</title>
-  <organization>sh.brew</organization>
+  <title>Homebrew for Intel Macs (unofficial)</title>
+  <organization>io.github.itsmaclol</organization>
 
-  <background file="Homebrew.png" alignment="bottomleft" scaling="proportional"/>
-  <background-darkAqua file="Homebrew.png" alignment="bottomleft" scaling="proportional"/>
   <welcome file="WELCOME.rtf"/>
   <license file="LICENSE.rtf"/>
   <conclusion file="CONCLUSION.rtf" />
   <allowed-os-versions>
-    <os-version min="15.0.0"/>
+    <os-version min="11.0.0"/>
   </allowed-os-versions>
+
+  <script>
+    // See https://developer.apple.com/documentation/installer_js
+    function installation_check() {
+      try {
+        // Apple Silicon reports this even when Installer runs under Rosetta.
+        if (system.sysctl("hw.optional.arm64") == 1) {
+          my.result.title = "This package is for Intel Macs";
+          my.result.message = "Apple Silicon Macs should use the official Homebrew installer from https://brew.sh instead.";
+          my.result.type = "Fatal";
+          return false;
+        }
+      } catch (error) {
+        // Intel Macs do not have the sysctl at all.
+      }
+      return true;
+    }
+  </script>
+  <installation-check script="installation_check()" />
 </installer-gui-script>

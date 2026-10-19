@@ -1,0 +1,358 @@
+# Builds Homebrew's macOS .pkg for Intel the same way Homebrew/brew's release.yml
+# builds the Apple Silicon one, then tests it (and install.sh) on an Intel runner.
+name: Intel installer
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Homebrew/brew tag to package (default: latest release)"
+        required: false
+        type: string
+      publish:
+        description: "Publish the tested package as a GitHub release"
+        required: false
+        type: boolean
+        default: true
+env:
+  HOMEBREW_NO_ANALYTICS_THIS_RUN: 1
+  HOMEBREW_NO_ANALYTICS_MESSAGE_OUTPUT: 1
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash -xeuo pipefail {0}
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    outputs:
+      version: ${{ steps.homebrew-version.outputs.version }}
+      installer_path: "Homebrew-${{ steps.homebrew-version.outputs.version }}-intel.pkg"
+    env:
+      # Homebrew still runs on Intel macOS 11 or newer (HOMEBREW_MACOS_OLDEST_ALLOWED).
+      HOMEBREW_MACOS_OLDEST_SUPPORTED: "11.0"
+    permissions:
+      contents: read
+      attestations: write # for actions/attest
+      id-token: write # for actions/attest
+    steps:
+      - name: Checkout Intel packaging files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: intel
+          persist-credentials: false
+
+      - name: Resolve Homebrew/brew tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ -z "${TAG}" ]]
+          then
+            TAG="$(gh release view --repo Homebrew/brew --json tagName --jq .tagName)"
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      # Not Homebrew/actions/setup-homebrew: it treats this homebrew-* repository as a tap.
+      - name: Set up Homebrew
+        run: |
+          if ! command -v brew
+          then
+            NONINTERACTIVE=1 /bin/bash intel/install.sh
+          fi
+          brew update
+          brew --version
+
+      - name: Checkout Homebrew/brew to brew subdirectory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Homebrew/brew
+          ref: ${{ steps.tag.outputs.tag }}
+          path: brew
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check and get Homebrew version from Git
+        id: homebrew-version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          homebrew_version="$(git -C brew describe --tags --always)"
+
+          if [[ "${homebrew_version}" != "${TAG}" ]]
+          then
+            echo "Homebrew version ${homebrew_version} does not match tag ${TAG}"
+            exit 1
+          fi
+
+          echo "version=${homebrew_version}" >> "${GITHUB_OUTPUT}"
+
+          # Ship a stable checkout for hosts without Git or developer tools.
+          git -C brew checkout --force -B stable
+
+      - name: Prepare Homebrew API cache for package
+        run: |
+          rm -rvf ~/Library/Caches/Homebrew/api
+
+          HOMEBREW_DEVELOPER=1 HOMEBREW_UPDATE_SKIP_BREW=1 brew update --auto-update --verbose
+          cp -vR ~/Library/Caches/Homebrew/api brew/cache_api
+
+          # Intel bottle tags are bare macOS names (e.g. packages.sequoia.jws.json).
+          intel_api=""
+          for api_file in brew/cache_api/internal/packages.*.jws.json
+          do
+            [[ "${api_file}" == */packages.arm64_* ]] || intel_api="${api_file}"
+          done
+          test -n "${intel_api}"
+
+      - name: Check installer Git commands
+        run: |
+          # Keep repository Git calls using the install user's wrapper.
+          if grep -nE 'git .* (checkout|reset|clean)\b|git .* tag --list\b' \
+            intel/package/scripts/postinstall
+          then
+            echo "Installer Git repository operations must use \`git_as_user\`."
+            exit 1
+          fi
+
+      - name: Prepare Homebrew installer scripts
+        run: |
+          installer_scripts="${RUNNER_TEMP}/homebrew-installer-scripts"
+          rm -rvf "${installer_scripts}"
+          mkdir -vp "${installer_scripts}"
+          cp -vp brew/package/scripts/preinstall \
+            intel/package/scripts/postinstall \
+            brew/Library/Homebrew/utils/macos_user.sh \
+            "${installer_scripts}/"
+          echo "HOMEBREW_INSTALLER_SCRIPTS=${installer_scripts}" >> "${GITHUB_ENV}"
+
+      - name: Build Homebrew installer component package
+        env:
+          HOMEBREW_VERSION: ${{ steps.homebrew-version.outputs.version }}
+        run: pkgbuild --root brew
+          --scripts "${HOMEBREW_INSTALLER_SCRIPTS}"
+          --identifier io.github.itsmaclol.homebrew-intel
+          --version "${HOMEBREW_VERSION}"
+          --install-location /usr/local/Homebrew
+          --filter .DS_Store
+          --filter "(.*)/Library/Homebrew/test/support/fixtures/"
+          --min-os-version "${HOMEBREW_MACOS_OLDEST_SUPPORTED}"
+          Homebrew.pkg
+
+      - name: Convert Homebrew license file to RTF
+        run: textutil -convert rtf brew/LICENSE.txt -output intel/package/resources/LICENSE.rtf
+
+      - name: Build Homebrew installer product package
+        env:
+          HOMEBREW_VERSION: ${{ steps.homebrew-version.outputs.version }}
+        run: productbuild --resources intel/package/resources
+          --distribution intel/package/Distribution.xml
+          --package-path Homebrew.pkg
+          "Homebrew-${HOMEBREW_VERSION}-intel.pkg"
+
+      - name: Generate build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: Homebrew-${{ steps.homebrew-version.outputs.version }}-intel.pkg
+
+      - name: Upload installer to GitHub Actions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Homebrew-${{ steps.homebrew-version.outputs.version }}-intel.pkg
+          path: Homebrew-${{ steps.homebrew-version.outputs.version }}-intel.pkg
+
+  test:
+    needs: build
+    runs-on: macos-15-intel
+    env:
+      INSTALLER_PATH: ${{ needs.build.outputs.installer_path }}
+      HOMEBREW_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout Intel packaging files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: intel
+          persist-credentials: false
+
+      - name: Download installer from GitHub Actions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: "${{ needs.build.outputs.installer_path }}"
+
+      - name: Unset global Git safe directory setting
+        run: git config --global --unset-all safe.directory || true
+
+      - name: Remove existing Homebrew installations
+        run: |
+          if command -v brew
+          then
+            sudo rm -rf /usr/local/{Cellar,Caskroom,Homebrew/Library/Taps}
+            brew cleanup --prune-prefix
+          fi
+          sudo rm -rf /usr/local/{bin/brew,Homebrew,Frameworks,var/homebrew} /opt/homebrew ~/Library/Caches/Homebrew
+
+      - name: Check install.sh refuses prefixes longer than /usr/local
+        run: |
+          if NONINTERACTIVE=1 /bin/bash intel/install.sh --path=/opt/homebrew
+          then
+            echo "install.sh should refuse /opt/homebrew on Intel."
+            exit 1
+          fi
+          test ! -e /opt/homebrew
+
+      - name: Install Homebrew with install.sh
+        run: |
+          NONINTERACTIVE=1 /bin/bash intel/install.sh
+          test "$(brew --prefix)" = /usr/local
+          test "$(brew --repository)" = /usr/local/Homebrew
+          test "$(readlink /usr/local/bin/brew)" = ../Homebrew/bin/brew
+          brew --version
+
+      - name: Install the package over the install.sh installation
+        run: |
+          echo | sudo tee /var/log/install.log
+          sudo installer -verbose -pkg "${INSTALLER_PATH}" -target /
+          test "$(brew --version)" = "Homebrew ${HOMEBREW_VERSION}"
+          test "$(git -C /usr/local/Homebrew rev-parse --abbrev-ref HEAD)" = stable
+
+      - name: Output installer logs (upgrade)
+        if: ${{ always() }}
+        run: sudo cat /var/log/install.log
+
+      - name: Remove Homebrew again
+        run: |
+          sudo rm -rf /usr/local/{Cellar,Caskroom,Homebrew/Library/Taps}
+          brew cleanup --prune-prefix
+          sudo rm -rf /usr/local/{bin/brew,Homebrew,Frameworks,var/homebrew} ~/Library/Caches/Homebrew
+
+      - name: Install Homebrew from installer package
+        run: |
+          echo | sudo tee /var/log/install.log
+          sudo installer -verbose -pkg "${INSTALLER_PATH}" -target /
+
+      - name: Output installer logs
+        if: ${{ always() }}
+        run: sudo cat /var/log/install.log
+
+      - name: Check installation layout
+        run: |
+          test "$(command -v brew)" = /usr/local/bin/brew
+          test "$(readlink /usr/local/bin/brew)" = ../Homebrew/bin/brew
+          test "$(brew --prefix)" = /usr/local
+          test "$(brew --repository)" = /usr/local/Homebrew
+          test "$(brew --version)" = "Homebrew ${HOMEBREW_VERSION}"
+          test "$(git -C /usr/local/Homebrew rev-parse --abbrev-ref HEAD)" = stable
+          test -z "$(git -C /usr/local/Homebrew status --porcelain)"
+          test ! -e /usr/local/Homebrew/cache_api
+          test ! -e /opt/homebrew
+          ls ~/Library/Caches/Homebrew/api/internal/packages.*.jws.json
+          test -z "$(find /usr/local/{Homebrew,Cellar,Caskroom,Frameworks,var/homebrew} ! -user "$(id -un)")"
+
+      - run: brew config
+
+      # Intel is Tier 3, so `brew doctor` always reports at least that.
+      - run: brew doctor || true
+
+      - name: Install a formula
+        run: |
+          brew install hello
+          hello --version
+
+      - name: Zero existing installer logs (again)
+        run: echo | sudo tee /var/log/install.log
+
+      - name: Reinstall Homebrew from installer package
+        run: |
+          sudo installer -verbose -pkg "${INSTALLER_PATH}" -target /
+          test "$(brew --version)" = "Homebrew ${HOMEBREW_VERSION}"
+          hello --version
+
+      - name: Output installer logs (again)
+        if: ${{ always() }}
+        run: sudo cat /var/log/install.log
+
+      - run: brew config
+
+      - name: Install Homebrew for a non-admin user
+        run: |
+          brew uninstall hello
+          brew cleanup --prune-prefix
+          sudo sysadminctl -addUser brewtest -password "$(uuidgen)" -shell /bin/bash
+          test "$(id -gn brewtest)" = staff
+          if id -Gn brewtest | grep -Eq '(^| )(admin|sudo|wheel)( |$)'
+          then
+            echo "The test account must not be an administrator."
+            exit 1
+          fi
+          sudo defaults write /var/tmp/.homebrew_pkg_user HOMEBREW_PKG_USER brewtest
+          sudo chown root:wheel /var/tmp/.homebrew_pkg_user.plist
+          sudo chmod 600 /var/tmp/.homebrew_pkg_user.plist
+          sudo chmod -N /var/tmp/.homebrew_pkg_user.plist
+          sudo rm -rf /usr/local/{Homebrew,Cellar,Caskroom,Frameworks,var/homebrew,bin/brew}
+          sudo installer -verbose -pkg "${INSTALLER_PATH}" -target /
+          sudo -i -u brewtest /usr/bin/env HOMEBREW_NO_SUDO=1 /usr/local/bin/brew install hello
+          sudo -i -u brewtest /usr/local/bin/hello --version
+          test -z "$(find /usr/local/{Homebrew,Cellar,Caskroom,Frameworks,var/homebrew} ! -user brewtest -o ! -group staff)"
+
+      - name: Check non-admin permissions on installation and reinstallation
+        run: |
+          for phase in fresh reinstall
+          do
+            if [[ "${phase}" == reinstall ]]
+            then
+              sudo chmod go+w /usr/local/Homebrew /usr/local/bin /usr/local/Homebrew/bin/brew \
+                /Users/brewtest/Library/Caches/Homebrew
+              sudo installer -verbose -pkg "${INSTALLER_PATH}" -target /
+            fi
+            writable_paths="$(sudo find /usr/local/{Homebrew,Cellar,Caskroom,Frameworks,var/homebrew} \
+              /Users/brewtest/Library/Caches/Homebrew ! -type l \( -perm -0020 -o -perm -0002 \))"
+            if [[ -n "${writable_paths}" ]]
+            then
+              printf 'Unexpected writable paths:\n%s\n' "${writable_paths}"
+              exit 1
+            fi
+            test ! -w /usr/local/Homebrew
+            test ! -w /usr/local/bin
+            test ! -w /usr/local/Homebrew/bin/brew
+          done
+
+  publish:
+    needs: [build, test]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the release
+    env:
+      INSTALLER_PATH: ${{ needs.build.outputs.installer_path }}
+      HOMEBREW_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download installer from GitHub Actions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: "${{ needs.build.outputs.installer_path }}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Unversioned like upstream's Homebrew.pkg, so releases/latest/download/ links work.
+          mv "${INSTALLER_PATH}" Homebrew-intel.pkg
+          sha256="$(sha256sum Homebrew-intel.pkg | cut -d' ' -f1)"
+          gh release create "${HOMEBREW_VERSION}-intel" Homebrew-intel.pkg \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Homebrew ${HOMEBREW_VERSION} for Intel Macs (unofficial)" \
+            --notes "Unofficial, unsigned Intel (x86_64) build of Homebrew's macOS installer for Homebrew/brew ${HOMEBREW_VERSION}, built and tested on GitHub Actions macos-15-intel.
+
+          SHA-256: \`${sha256}\`
+
+          Verify provenance: \`gh attestation verify Homebrew-intel.pkg --repo ${GITHUB_REPOSITORY}\`"

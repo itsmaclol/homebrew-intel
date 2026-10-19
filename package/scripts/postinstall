@@ -25,15 +25,16 @@ export HOMEBREW_NO_ANALYTICS_THIS_RUN=1
 export HOMEBREW_NO_ANALYTICS_MESSAGE_OUTPUT=1
 
 # verify the installation exists
-# default to /opt/homebrew to make development/testing easier
-homebrew_directory="${2:-/opt/homebrew}"
+# default to /usr/local/Homebrew to make development/testing easier
+homebrew_directory="${2:-/usr/local/Homebrew}"
 if [[ ! -d "${homebrew_directory:?}" ]]
 then
   echo "No directory at ${homebrew_directory}!" >&2
   exit 1
 fi
 
-cd "${homebrew_directory}"
+# Intel layout: the repository is /usr/local/Homebrew inside the shared /usr/local prefix.
+cd "${homebrew_directory}/.."
 
 refuse_symlinked_directories() {
   for dir in Caskroom Cellar Frameworks bin etc include lib opt sbin share var var/homebrew var/homebrew/linked
@@ -92,18 +93,25 @@ then
   # Keep in sync with brew.sh and Homebrew/install's install.sh.
   umask go-w
   homebrew_pkg_mode="u=rwx,go-w"
-  chmod -R go-w .
 fi
 
 # create missing directories
 refuse_symlinked_directories
-mkdir -vp Caskroom Cellar Frameworks etc include lib opt sbin share var
+mkdir -vp Caskroom Cellar Frameworks bin etc include lib opt sbin share var
 (
   enter_managed_directory var "${prefix_directory}/var" var
   mkdir -vp homebrew
   enter_managed_directory homebrew "${prefix_directory}/var/homebrew" var/homebrew
   mkdir -vp linked
 )
+ln -svf "../Homebrew/bin/brew" bin/brew
+
+# /usr/local is shared with other software, so only recurse into what Homebrew owns.
+homebrew_owned_directories=(Caskroom Cellar Frameworks Homebrew var/homebrew)
+if [[ "${homebrew_pkg_group}" == staff ]]
+then
+  chmod -R go-w "${homebrew_owned_directories[@]}"
+fi
 
 if [[ -z "${HOMEBREW_NO_SUDO:-}" ]] && command -v sudo &>/dev/null
 then
@@ -133,7 +141,26 @@ chmod -h "${homebrew_pkg_mode}" Caskroom Cellar Frameworks bin etc include lib o
   enter_managed_directory linked "${prefix_directory}/var/homebrew/linked" var/homebrew/linked
   chmod "${homebrew_pkg_mode}" .
 )
-chown -R "${homebrew_pkg_user}:${homebrew_pkg_group}" .
+chown -h "${homebrew_pkg_user}:${homebrew_pkg_group}" bin bin/brew etc include lib opt sbin share var
+chown -h -R "${homebrew_pkg_user}:${homebrew_pkg_group}" "${homebrew_owned_directories[@]}"
+
+# Make existing shared directories that Homebrew links into writable (as install.sh does).
+for dir in etc/bash_completion.d lib/pkgconfig share/aclocal share/doc share/info share/locale \
+  share/man share/man/man{1,2,3,4,5,6,7,8} share/zsh share/zsh/site-functions var/log
+do
+  [[ -d "${dir}" ]] || continue
+  (
+    cd -P "${dir}"
+    # Never follow a symlinked path component as root.
+    [[ "$(pwd -P)" == "${prefix_directory}/${dir}" ]] || exit 0
+    case "${dir}" in
+      # zsh refuses to load completions from group-writable directories.
+      share/zsh*) chmod u=rwx,go-w . ;;
+      *) chmod "${homebrew_pkg_mode}" . ;;
+    esac
+    chown "${homebrew_pkg_user}:${homebrew_pkg_group}" .
+  )
+done
 
 rm -rf "${homebrew_directory}/.git/hooks" "${homebrew_directory}/.gitconfig" "${homebrew_directory}/.config/git"
 # The package already contains a stable checkout; reset it when Git is available.
@@ -170,9 +197,4 @@ then
 fi
 rm -vrf "${homebrew_directory}/cache_api"
 
-# add Homebrew to the default PATH
-if [[ -d "/etc/paths.d" ]]
-then
-  echo "${homebrew_directory}/bin" >/etc/paths.d/homebrew
-  chown root:wheel /etc/paths.d/homebrew
-fi
+# No /etc/paths.d entry: /usr/local/bin is already in the default PATH (/etc/paths).
