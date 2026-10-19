@@ -132,6 +132,8 @@ jobs:
             intel/package/scripts/postinstall \
             brew/Library/Homebrew/utils/macos_user.sh \
             "${installer_scripts}/"
+          # Installer skips non-executable scripts ("postinstall doesn't exist").
+          test -x "${installer_scripts}/preinstall" && test -x "${installer_scripts}/postinstall"
           echo "HOMEBREW_INSTALLER_SCRIPTS=${installer_scripts}" >> "${GITHUB_ENV}"
 
       - name: Build Homebrew installer component package
