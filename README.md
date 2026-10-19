@@ -109,7 +109,16 @@ Commit `fed8cf4` imports the upstream files untouched, so the next commit's diff
 - Reinstalling the `.pkg` keeps working.
 - A non-admin install works, and no group- or world-writable paths are left after either a fresh install or a reinstall.
 
-To package a newer Homebrew release, open **Actions → Intel installer → Run workflow**. Leave the tag empty to use the latest release.
+## Staying up to date
+
+- **After you install,** `brew` updates itself from Homebrew/brew like any normal installation, because the checkout's remote is `github.com/Homebrew/brew`. This repository only affects the installers.
+- **The installers update themselves.** Every 6 hours, [`sync-upstream.yml`](.github/workflows/sync-upstream.yml) runs `scripts/sync-upstream.sh merge`. That pulls the latest Homebrew/install `install.sh` and the latest Homebrew/brew release's package files, and three-way merges them into the Intel versions. The merge base is the pristine copies in `upstream/`; the revisions they come from are recorded in `upstream/SOURCES`. The merge is tested on `macos-15-intel` on a `sync/upstream` branch and only lands on `main` if every test passes. A `<tag>-intel` release is then published for any Homebrew release that doesn't have one yet.
+- **When a person is needed,** the job opens an issue instead: GitHub emails you, and the job never repeats the same report. That happens in three cases:
+  - upstream's changes conflict with the Intel edits;
+  - the Intel tests fail;
+  - Homebrew changes its own build workflow (`release.yml`, beyond action pins). A workflow can't push changes to workflow files with its built-in token, so that one needs a manual port.
+- **Manual runs:** **Actions → Sync upstream → Run workflow** syncs now. **Actions → Intel installer → Run workflow** rebuilds any tag.
+- **Keep the schedule alive.** GitHub disables schedules in public repositories after 60 days without activity. The sync's own commits normally count as activity; if it ever stops, re-enable it on the Actions tab.
 
 ## Limits
 

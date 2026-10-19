@@ -1,0 +1,108 @@
+# Every 6 hours: merge Homebrew's latest installer sources into the Intel port, test the
+# result on Intel before it lands on main, and publish a package for each new Homebrew release.
+name: Sync upstream
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream
+
+defaults:
+  run:
+    shell: bash -xeuo pipefail {0}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write # push tested upstream changes to main
+      actions: write # run the Intel installer workflow
+      issues: write # report changes that need a human
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream changes
+        id: sync
+        run: scripts/sync-upstream.sh merge
+
+      - name: Report upstream build workflow changes
+        if: steps.sync.outputs.workflow_changed == '1'
+        env:
+          SUMMARY: ${{ steps.sync.outputs.summary }}
+        run: |
+          {
+            echo "Upstream changed how it builds the installer (${SUMMARY}), beyond action pins."
+            echo "Check whether \`.github/workflows/intel-pkg.yml\` needs the same change:"
+            echo '```diff'
+            cat "${RUNNER_TEMP}/release.yml.diff"
+            echo '```'
+          } >"${RUNNER_TEMP}/body.md"
+          scripts/sync-upstream.sh report "Homebrew changed how it builds its installer" "${RUNNER_TEMP}/body.md"
+
+      - name: Report conflicts
+        if: steps.sync.outputs.conflicts == '1'
+        env:
+          SUMMARY: ${{ steps.sync.outputs.summary }}
+        run: |
+          {
+            echo "Upstream changes (${SUMMARY}) conflict with the Intel port, so nothing was merged or published."
+            echo "To resolve: run \`scripts/sync-upstream.sh merge\`, fix the conflict markers, then commit and push."
+            echo '```diff'
+            git diff
+            echo '```'
+          } >"${RUNNER_TEMP}/body.md"
+          scripts/sync-upstream.sh report "Upstream changes conflict with the Intel port" "${RUNNER_TEMP}/body.md"
+          exit 1
+
+      - name: Test merged changes on Intel, then land them
+        if: steps.sync.outputs.changed == '1' && steps.sync.outputs.conflicts == '0'
+        env:
+          SUMMARY: ${{ steps.sync.outputs.summary }}
+          BREW_TAG: ${{ steps.sync.outputs.brew_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B sync/upstream
+          git commit -a -m "Sync upstream installer sources" -m "${SUMMARY}"
+          git push --force origin sync/upstream
+
+          run_url="$(gh workflow run intel-pkg.yml --ref sync/upstream -f tag="${BREW_TAG}" -f publish=false)"
+          if [[ "${run_url}" != https://* ]]
+          then
+            # Older gh versions don't print the run URL.
+            sleep 15
+            run_url="$(gh run list --workflow intel-pkg.yml --branch sync/upstream --event workflow_dispatch \
+              --limit 1 --json url --jq '.[0].url')"
+          fi
+
+          if gh run watch "${run_url##*/}" --exit-status --interval 60 >/dev/null
+          then
+            git push origin sync/upstream:main
+            git push origin --delete sync/upstream
+          else
+            echo "The Intel installer tests failed for upstream changes (${SUMMARY}): ${run_url}" >"${RUNNER_TEMP}/body.md"
+            scripts/sync-upstream.sh report "Upstream changes break the Intel installer" "${RUNNER_TEMP}/body.md"
+            exit 1
+          fi
+
+      - name: Publish the latest Homebrew release
+        env:
+          BREW_TAG: ${{ steps.sync.outputs.brew_tag }}
+        run: |
+          if gh release view "${BREW_TAG}-intel" >/dev/null 2>&1
+          then
+            echo "${BREW_TAG}-intel is already published."
+          else
+            gh workflow run intel-pkg.yml --ref main -f tag="${BREW_TAG}" -f publish=true
+          fi
