@@ -1,3 +1,3 @@
 # Upstream revisions the Intel files are merged with; written by scripts/sync-upstream.sh.
-install_sha=a2fe82ef3a9ec7a5c72a559c09676256d6f354f6
+install_sha=85d1a3fc80d8a63932f632aca8f787de11d14a64
 brew_tag=7.0.10
